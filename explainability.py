@@ -1,9 +1,16 @@
+import os
 import re
 import joblib
 import numpy as np
-import shap
 from typing import Dict, Any, List, Optional
 from step4_train_url_model import extract_url_features
+
+try:
+    import shap
+    HAS_SHAP = True
+except Exception:
+    shap = None
+    HAS_SHAP = False
 
 class FraudShieldExplainer:
     """
@@ -12,23 +19,51 @@ class FraudShieldExplainer:
     Explains WHY the FraudShield models assigned a given risk verdict.
     """
     def __init__(self, 
-                 text_model_path: str = "models/text_classifier.pkl",
-                 tfidf_path: str = "models/tfidf_vectorizer.pkl",
-                 url_model_path: str = "models/url_classifier.pkl",
-                 url_features_path: str = "models/url_feature_names.pkl"):
+                 text_model_path: Optional[str] = None,
+                 tfidf_path: Optional[str] = None,
+                 url_model_path: Optional[str] = None,
+                 url_features_path: Optional[str] = None):
         
-        # Load NLP artifacts
-        self.text_model = joblib.load(text_model_path)
-        self.tfidf = joblib.load(tfidf_path)
-        self.text_feature_names = self.tfidf.get_feature_names_out()
-        self.text_weights = self.text_model.coef_[0]
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        def get_model_file(fname):
+            for candidate in [
+                os.path.join(base_dir, "models", fname),
+                os.path.join(base_dir, "models", "models", fname),
+                os.path.join(base_dir, fname)
+            ]:
+                if os.path.exists(candidate):
+                    return candidate
+            return os.path.join(base_dir, "models", fname)
 
-        # Load URL artifacts
-        self.url_model = joblib.load(url_model_path)
-        self.url_feature_names = joblib.load(url_features_path)
-        
-        # Initialize SHAP TreeExplainer for Random Forest
-        self.tree_explainer = shap.TreeExplainer(self.url_model)
+        text_model_path = text_model_path or get_model_file("text_classifier.pkl")
+        tfidf_path = tfidf_path or get_model_file("tfidf_vectorizer.pkl")
+        url_model_path = url_model_path or get_model_file("url_classifier.pkl")
+        url_features_path = url_features_path or get_model_file("url_feature_names.pkl")
+
+        # Load NLP artifacts safely
+        try:
+            self.text_model = joblib.load(text_model_path)
+            self.tfidf = joblib.load(tfidf_path)
+            self.text_feature_names = self.tfidf.get_feature_names_out()
+            self.text_weights = self.text_model.coef_[0]
+        except Exception:
+            self.text_model = None
+            self.tfidf = None
+            self.text_feature_names = []
+            self.text_weights = []
+
+        # Load URL artifacts safely
+        try:
+            self.url_model = joblib.load(url_model_path)
+            self.url_feature_names = joblib.load(url_features_path)
+            if HAS_SHAP and self.url_model is not None:
+                self.tree_explainer = shap.TreeExplainer(self.url_model)
+            else:
+                self.tree_explainer = None
+        except Exception:
+            self.url_model = None
+            self.url_feature_names = []
+            self.tree_explainer = None
 
         # Human-friendly feature labels
         self.feature_descriptions = {
@@ -52,7 +87,7 @@ class FraudShieldExplainer:
 
     def explain_text(self, text: str, top_k: int = 5) -> Dict[str, Any]:
         """Explain NLP text classification via exact token attributions."""
-        if not text or not text.strip():
+        if not text or not text.strip() or self.tfidf is None:
             return {"tokens": [], "top_fraud_words": [], "top_safe_words": []}
 
         vec = self.tfidf.transform([text])
@@ -96,7 +131,7 @@ class FraudShieldExplainer:
 
     def explain_url(self, url: str, top_k: int = 5) -> Dict[str, Any]:
         """Explain Random Forest URL classification using SHAP TreeExplainer."""
-        if not url or not url.strip():
+        if not url or not url.strip() or self.tree_explainer is None:
             return {"features": [], "top_fraud_factors": [], "top_safe_factors": []}
 
         feats = extract_url_features(url)

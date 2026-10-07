@@ -1,3 +1,4 @@
+import os
 import re
 from typing import Dict, Any, Optional
 from urllib.parse import urlparse
@@ -89,17 +90,47 @@ class FraudShieldRiskEngine:
     5. Threat Taxonomy (KYC, Utility Bill, Digital Arrest, Job Tasks)
     6. Citizen Safe Action Protocols (1930 Helpline)
     """
-    def __init__(self, text_model_path="models/text_classifier.pkl",
-                 vectorizer_path="models/tfidf_vectorizer.pkl",
-                 url_model_path="models/url_classifier.pkl"):
-        self.text_model = joblib.load(text_model_path)
-        self.vectorizer = joblib.load(vectorizer_path)
-        self.url_model = joblib.load(url_model_path)
-        self.explainer = FraudShieldExplainer(
-            text_model_path=text_model_path,
-            tfidf_path=vectorizer_path,
-            url_model_path=url_model_path
-        )
+    def __init__(self, text_model_path=None,
+                 vectorizer_path=None,
+                 url_model_path=None):
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        def get_model_file(fname):
+            for candidate in [
+                os.path.join(base_dir, "models", fname),
+                os.path.join(base_dir, "models", "models", fname),
+                os.path.join(base_dir, fname)
+            ]:
+                if os.path.exists(candidate):
+                    return candidate
+            return os.path.join(base_dir, "models", fname)
+
+        text_model_path = text_model_path or get_model_file("text_classifier.pkl")
+        vectorizer_path = vectorizer_path or get_model_file("tfidf_vectorizer.pkl")
+        url_model_path = url_model_path or get_model_file("url_classifier.pkl")
+
+        try:
+            self.text_model = joblib.load(text_model_path)
+            self.vectorizer = joblib.load(vectorizer_path)
+        except Exception as e:
+            print(f"[FraudShield] NLP model artifacts notice: {e}. Operating in heuristic fallback mode.")
+            self.text_model = None
+            self.vectorizer = None
+
+        try:
+            self.url_model = joblib.load(url_model_path)
+        except Exception as e:
+            print(f"[FraudShield] URL model artifact notice: {e}. Operating in heuristic fallback mode.")
+            self.url_model = None
+
+        try:
+            self.explainer = FraudShieldExplainer(
+                text_model_path=text_model_path,
+                tfidf_path=vectorizer_path,
+                url_model_path=url_model_path
+            )
+        except Exception as e:
+            print(f"[FraudShield] Explainer notice: {e}")
+            self.explainer = None
 
         # Manipulation Meter Lexicons (English + Hinglish Social Engineering)
         self.manipulation_lexicon = {
@@ -271,9 +302,12 @@ class FraudShieldRiskEngine:
             flags.append(f"Excessive subdomain nesting ({len(subdomains)} tiers) used to mask authentic origin")
 
         # 12. ML Model Prediction on Kaggle-trained Random Forest
-        features = pd.DataFrame([extract_url_features(normalized_url)])
-        ml_prob = self.url_model.predict_proba(features)[0][1]
-        ml_risk = float(ml_prob * 100)
+        if self.url_model is not None:
+            features = pd.DataFrame([extract_url_features(normalized_url)])
+            ml_prob = self.url_model.predict_proba(features)[0][1]
+            ml_risk = float(ml_prob * 100)
+        else:
+            ml_risk = rule_risk
 
         # 13. Ensemble Hybrid Fusion
         if flags:
@@ -333,8 +367,11 @@ class FraudShieldRiskEngine:
         text_lower = text.lower()
 
         # 1. Statistical ML Model Score
-        text_vec = self.vectorizer.transform([text])
-        ml_prob = float(self.text_model.predict_proba(text_vec)[0][1] * 100)
+        if self.text_model is not None and self.vectorizer is not None:
+            text_vec = self.vectorizer.transform([text])
+            ml_prob = float(self.text_model.predict_proba(text_vec)[0][1] * 100)
+        else:
+            ml_prob = 0.0
 
         # 2. Manipulation Meter Extraction
         manipulation_meter = self._extract_manipulation_meter(text)
@@ -749,14 +786,17 @@ class FraudShieldRiskEngine:
         # 8. Explainable AI (SHAP & Token Attribution)
         explanation = None
         if include_explanation:
-            try:
-                explanation = self.explainer.generate_explanation(
-                    text=text if has_text else "",
-                    url=url if valid_url_detected else "",
-                    risk_score=final_score
-                )
-            except Exception as e:
-                explanation = {"error": str(e), "executive_summary": []}
+            if self.explainer is not None:
+                try:
+                    explanation = self.explainer.generate_explanation(
+                        text=text if has_text else "",
+                        url=url if valid_url_detected else "",
+                        risk_score=final_score
+                    )
+                except Exception as e:
+                    explanation = {"error": str(e), "executive_summary": []}
+            else:
+                explanation = {"executive_summary": [f"Risk verdict {verdict} determined by multi-vector rule analysis."]}
 
         return {
             "risk_score": final_score,

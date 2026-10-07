@@ -5,8 +5,17 @@ import concurrent.futures
 from typing import Dict, Any, List, Optional
 from PIL import Image
 import numpy as np
-import cv2
-from logo_analyzer import LogoDomainMismatchEngine
+try:
+    import cv2
+    HAS_CV2 = True
+except Exception:
+    cv2 = None
+    HAS_CV2 = False
+
+try:
+    from logo_analyzer import LogoDomainMismatchEngine
+except Exception:
+    LogoDomainMismatchEngine = None
 
 try:
     import winocr
@@ -65,8 +74,8 @@ class UniversalImageAnalyzer:
         }
 
         # Initialize OpenCV QR detector and Logo vs Domain Mismatch Engine
-        self.qr_detector = cv2.QRCodeDetector()
-        self.logo_mismatch_engine = LogoDomainMismatchEngine()
+        self.qr_detector = cv2.QRCodeDetector() if (HAS_CV2 and cv2 is not None) else None
+        self.logo_mismatch_engine = LogoDomainMismatchEngine() if LogoDomainMismatchEngine is not None else None
 
     def preprocess_image_for_ocr(self, pil_image: Image.Image) -> Image.Image:
         """
@@ -96,6 +105,8 @@ class UniversalImageAnalyzer:
 
     def detect_qr_codes(self, pil_image: Image.Image) -> Dict[str, Any]:
         """Detect and decode QR codes embedded in the image with multi-pass fallback."""
+        if self.qr_detector is None:
+            return {"has_qr": False, "payload": "", "type": "NONE"}
         try:
             cv_img = cv2.cvtColor(np.array(pil_image.convert('RGB')), cv2.COLOR_RGB2BGR)
             # Pass 1: Standard BGR

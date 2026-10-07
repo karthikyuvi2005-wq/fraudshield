@@ -1,7 +1,12 @@
 import re
 from typing import Dict, Any, List, Optional, Tuple
 from urllib.parse import urlparse
-import cv2
+try:
+    import cv2
+    HAS_CV2 = True
+except Exception:
+    cv2 = None
+    HAS_CV2 = False
 import numpy as np
 from PIL import Image
 
@@ -73,7 +78,7 @@ class VisualLogoDetector:
     color moments, and template keypoint matching.
     """
     def __init__(self):
-        self.orb = cv2.ORB_create(nfeatures=500)
+        self.orb = cv2.ORB_create(nfeatures=500) if (HAS_CV2 and cv2 is not None) else None
 
     def detect_logos(self, cv_img: np.ndarray, ocr_text: str = "") -> List[Dict[str, Any]]:
         """
@@ -81,7 +86,7 @@ class VisualLogoDetector:
         Returns a list of detected logos with brand name, confidence, and bounding box.
         """
         detected = []
-        if cv_img is None or cv_img.size == 0:
+        if cv_img is None or cv_img.size == 0 or not HAS_CV2 or cv2 is None:
             return detected
 
         hsv = cv2.cvtColor(cv_img, cv2.COLOR_BGR2HSV)
